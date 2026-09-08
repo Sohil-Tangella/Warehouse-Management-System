@@ -6,6 +6,7 @@ Entry point for the Warehouse Management System API.
 This module handles:
 - FastAPI application configuration
 - Application startup and shutdown
+- PostgreSQL schema initialization
 - PostgreSQL and Redis health checks
 - Logging configuration
 - Inventory and order route registration
@@ -22,6 +23,7 @@ from database import (
     close_database_pool,
 )
 from inventory import router as inventory_router
+from models import initialize_database
 from orders import router as orders_router
 from redis_client import (
     check_redis_connection,
@@ -57,6 +59,7 @@ async def lifespan(app: FastAPI):
 
     Startup:
     - Verify PostgreSQL connectivity
+    - Initialize the PostgreSQL schema
     - Check Redis availability
     - Log service status
 
@@ -72,9 +75,19 @@ async def lifespan(app: FastAPI):
     try:
         check_database_connection()
 
+        logger.info(
+            "PostgreSQL connection verified."
+        )
+
+        initialize_database()
+
+        logger.info(
+            "PostgreSQL schema initialized."
+        )
+
     except Exception:
         logger.exception(
-            "PostgreSQL startup check failed."
+            "PostgreSQL startup initialization failed."
         )
 
         raise
@@ -96,18 +109,20 @@ async def lifespan(app: FastAPI):
         "Warehouse Management System API started successfully."
     )
 
-    yield
+    try:
+        yield
 
-    logger.info(
-        "Shutting down Warehouse Management System API."
-    )
+    finally:
+        logger.info(
+            "Shutting down Warehouse Management System API."
+        )
 
-    close_database_pool()
-    close_redis_connection()
+        close_database_pool()
+        close_redis_connection()
 
-    logger.info(
-        "Warehouse Management System API shutdown complete."
-    )
+        logger.info(
+            "Warehouse Management System API shutdown complete."
+        )
 
 
 # -------------------------------------------------------------------
@@ -165,7 +180,7 @@ def root():
 
 
 # -------------------------------------------------------------------
-# Health Check
+# Health Check Endpoint
 # -------------------------------------------------------------------
 
 @app.get(
@@ -177,7 +192,7 @@ def health_check():
     Return application dependency status.
 
     PostgreSQL is required for the application to operate.
-    Redis is optional because database operations can fall back
+    Redis is optional because inventory requests can fall back
     to PostgreSQL when the cache is unavailable.
     """
 

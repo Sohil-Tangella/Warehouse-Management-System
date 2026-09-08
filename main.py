@@ -1,18 +1,130 @@
+"""
+main.py
+
+Entry point for the Warehouse Management System API.
+
+This module handles:
+- FastAPI application configuration
+- Application startup and shutdown
+- PostgreSQL and Redis health checks
+- Logging configuration
+- Inventory and order route registration
+- API health endpoints
+"""
+
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
-# Import API routers
+from database import (
+    check_database_connection,
+    close_database_pool,
+)
 from inventory import router as inventory_router
 from orders import router as orders_router
+from redis_client import (
+    check_redis_connection,
+    close_redis_connection,
+)
+
 
 # -------------------------------------------------------------------
-# Create FastAPI application
+# Logging Configuration
+# -------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(name)s | "
+        "%(message)s"
+    ),
+)
+
+logger = logging.getLogger(__name__)
+
+
+# -------------------------------------------------------------------
+# Application Lifecycle
+# -------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manage application startup and shutdown.
+
+    Startup:
+    - Verify PostgreSQL connectivity
+    - Check Redis availability
+    - Log service status
+
+    Shutdown:
+    - Close PostgreSQL connections
+    - Close Redis connections
+    """
+
+    logger.info(
+        "Starting Warehouse Management System API."
+    )
+
+    try:
+        check_database_connection()
+
+    except Exception:
+        logger.exception(
+            "PostgreSQL startup check failed."
+        )
+
+        raise
+
+    redis_available = check_redis_connection()
+
+    if redis_available:
+        logger.info(
+            "Redis caching is available."
+        )
+
+    else:
+        logger.warning(
+            "Redis is unavailable. "
+            "The API will continue using PostgreSQL."
+        )
+
+    logger.info(
+        "Warehouse Management System API started successfully."
+    )
+
+    yield
+
+    logger.info(
+        "Shutting down Warehouse Management System API."
+    )
+
+    close_database_pool()
+    close_redis_connection()
+
+    logger.info(
+        "Warehouse Management System API shutdown complete."
+    )
+
+
+# -------------------------------------------------------------------
+# FastAPI Application
 # -------------------------------------------------------------------
 
 app = FastAPI(
     title="Warehouse Management System API",
-    description="REST API for inventory management and order processing.",
-    version="1.0.0"
+    description=(
+        "REST API for warehouse inventory management, "
+        "inventory caching, low-stock monitoring, "
+        "and transaction-safe order processing."
+    ),
+    version="2.0.0",
+    lifespan=lifespan,
 )
+
 
 # -------------------------------------------------------------------
 # Register API Routes
@@ -21,44 +133,76 @@ app = FastAPI(
 app.include_router(
     inventory_router,
     prefix="/inventory",
-    tags=["Inventory"]
+    tags=["Inventory"],
 )
 
 app.include_router(
     orders_router,
     prefix="/orders",
-    tags=["Orders"]
+    tags=["Orders"],
 )
 
+
 # -------------------------------------------------------------------
-# Health Check Endpoint
+# Root Endpoint
 # -------------------------------------------------------------------
 
-@app.get("/")
+@app.get(
+    "/",
+    tags=["System"],
+)
 def root():
     """
-    Simple endpoint to verify that the API is running.
+    Return basic API information.
     """
 
     return {
-        "message": "Warehouse Management System API is running.",
-        "status": "online"
+        "name": "Warehouse Management System API",
+        "version": "2.0.0",
+        "status": "online",
+        "documentation": "/docs",
     }
 
+
 # -------------------------------------------------------------------
-# Application Startup Event
+# Health Check
 # -------------------------------------------------------------------
 
-@app.on_event("startup")
-def startup_event():
+@app.get(
+    "/health",
+    tags=["System"],
+)
+def health_check():
     """
-    Executes once when the application starts.
+    Return application dependency status.
 
-    In a production application this is where you might:
-    - Test the PostgreSQL connection
-    - Connect to Redis
-    - Load configuration
-    - Initialize logging
+    PostgreSQL is required for the application to operate.
+    Redis is optional because database operations can fall back
+    to PostgreSQL when the cache is unavailable.
     """
 
-    print("Warehouse Management System started successfully.")
+    database_status = "healthy"
+    redis_status = "healthy"
+
+    try:
+        check_database_connection()
+
+    except Exception:
+        database_status = "unhealthy"
+
+    if not check_redis_connection():
+        redis_status = "unavailable"
+
+    overall_status = (
+        "healthy"
+        if database_status == "healthy"
+        else "unhealthy"
+    )
+
+    return {
+        "status": overall_status,
+        "services": {
+            "postgresql": database_status,
+            "redis": redis_status,
+        },
+    }
